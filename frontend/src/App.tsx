@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   FragmentInput,
   ReconstructionResult,
+  ReconstructRequest,
   ValidationIssue,
 } from "./types";
 import { ApiError, reconstruct } from "./api";
@@ -9,6 +10,7 @@ import { SAMPLES } from "./sampleData";
 import FragmentTable, { type DraftRow } from "./components/FragmentTable";
 import ImportPanel from "./components/ImportPanel";
 import VerdictPanel from "./components/VerdictPanel";
+import LadderSection from "./components/LadderSection";
 import ValidationErrors from "./components/ValidationErrors";
 
 interface ClientIssue {
@@ -37,9 +39,12 @@ export default function App() {
   });
   const [result, setResult] = useState<ReconstructionResult | null>(null);
   const [issues, setIssues] = useState<ClientIssue[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [pending, setPending] = useState<"verdict" | "ladder" | null>(null);
   const [stale, setStale] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  // 候选阶梯: 级数(2–5)与是否启用; 启用后每次提交都会携带 ladder_size。
+  const [ladderSize, setLadderSize] = useState(3);
+  const [ladderWanted, setLadderWanted] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const seqRef = useRef(0);
 
@@ -96,70 +101,107 @@ export default function App() {
   );
 
   const invalidate = useCallback(() => {
-    // 修改输入后立即撤下旧裁决, 并作废任何在途请求, 防止旧响应晚到覆盖状态。
+    // 修改输入后立即撤下旧裁决(含阶梯), 并作废任何在途请求, 防止旧响应晚到覆盖状态。
     seqRef.current += 1;
     abortRef.current?.abort();
+    setPending(null);
     setStale(true);
     setIssues([]);
   }, []);
 
-  const handleSubmit = useCallback(async () => {
-    const length = Number(targetLength);
-    const local: ClientIssue[] = [];
-    if (!/^\d+$/.test(targetLength.trim()) || length < 1 || length > 512) {
-      local.push({ msg: "目标长度必须是 1 至 512 的整数" });
-    }
-    if (rows.length < 2 || rows.length > 28) {
-      local.push({ msg: `片段数量必须在 2 至 28 之间(当前 ${rows.length})` });
-    }
-    if (targetLength.trim() !== "" && rows.length >= 2 && rows.length <= 28) {
-      local.push(...clientCheck(Number(targetLength) || 0, rows));
-    }
-    if (local.length > 0) {
-      setIssues(local);
-      setResult(null);
-      setStale(false);
-      return;
-    }
-
-    const fragments: FragmentInput[] = rows.map((row) => ({
-      id: row.id,
-      offset: Number(row.offset.trim()),
-      payload: row.payload.replace(/\s+/g, "").toUpperCase(),
-      weight: Number(row.weight.trim()),
-    }));
-
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const seq = ++seqRef.current;
-    setLoading(true);
-    setIssues([]);
-    try {
-      const res = await reconstruct(
-        { target_length: length, fragments },
-        controller.signal,
-      );
-      if (seq === seqRef.current) {
-        setResult(res);
-        setStale(false);
+  /**
+   * 提交重建。ladderN 为 null 时按原契约请求(不带 ladder_size);
+   * 否则请求 2–5 级候选阶梯, 响应中的阶梯随裁决一并展示。
+   */
+  const submit = useCallback(
+    async (ladderN: number | null, kind: "verdict" | "ladder") => {
+      const length = Number(targetLength);
+      const local: ClientIssue[] = [];
+      if (!/^\d+$/.test(targetLength.trim()) || length < 1 || length > 512) {
+        local.push({ msg: "目标长度必须是 1 至 512 的整数" });
       }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      if (seq !== seqRef.current) return;
-      if (err instanceof ApiError && err.status === 422) {
-        setIssues(err.issues.map(toClientIssue));
+      if (rows.length < 2 || rows.length > 28) {
+        local.push({ msg: `片段数量必须在 2 至 28 之间(当前 ${rows.length})` });
+      }
+      if (targetLength.trim() !== "" && rows.length >= 2 && rows.length <= 28) {
+        local.push(...clientCheck(Number(targetLength) || 0, rows));
+      }
+      if (local.length > 0) {
+        setIssues(local);
         setResult(null);
-      } else {
-        setIssues([
-          { msg: err instanceof Error ? err.message : "网络或服务错误" },
-        ]);
+        setStale(false);
+        return;
       }
-      setStale(false);
-    } finally {
-      if (seq === seqRef.current) setLoading(false);
-    }
-  }, [targetLength, rows, clientCheck]);
+
+      const fragments: FragmentInput[] = rows.map((row) => ({
+        id: row.id,
+        offset: Number(row.offset.trim()),
+        payload: row.payload.replace(/\s+/g, "").toUpperCase(),
+        weight: Number(row.weight.trim()),
+      }));
+      const request: ReconstructRequest = { target_length: length, fragments };
+      if (ladderN !== null) {
+        request.ladder_size = ladderN;
+      }
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const seq = ++seqRef.current;
+      setPending(kind);
+      setIssues([]);
+      try {
+        const res = await reconstruct(request, controller.signal);
+        if (seq === seqRef.current) {
+          setResult(res);
+          setStale(false);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (seq !== seqRef.current) return;
+        if (err instanceof ApiError && err.status === 422) {
+          setIssues(err.issues.map(toClientIssue));
+          setResult(null);
+        } else {
+          setIssues([
+            { msg: err instanceof Error ? err.message : "网络或服务错误" },
+          ]);
+        }
+        setStale(false);
+      } finally {
+        if (seq === seqRef.current) setPending(null);
+      }
+    },
+    [targetLength, rows, clientCheck],
+  );
+
+  // 生成/收起阶梯, 以及级数变更: 级数一变立即撤下旧阶梯并按新级数重新请求。
+  const handleGenerateLadder = useCallback(() => {
+    setLadderWanted(true);
+    submit(ladderSize, "ladder");
+  }, [submit, ladderSize]);
+
+  const handleCollapseLadder = useCallback(() => {
+    setLadderWanted(false);
+    // 作废在途请求, 防止晚到的响应把已收起的阶梯重新挂上。
+    seqRef.current += 1;
+    abortRef.current?.abort();
+    setPending(null);
+    // 阶梯只是裁决的附加视图, 收起无需重新请求, 直接摘除即可。
+    setResult((prev) => (prev ? { ...prev, ladder: undefined } : prev));
+  }, []);
+
+  const handleLadderSizeChange = useCallback(
+    (n: number) => {
+      setLadderSize(n);
+      // 立即撤下旧阶梯结果。
+      setResult((prev) => (prev?.ladder ? { ...prev, ladder: undefined } : prev));
+      if (ladderWanted) {
+        submit(n, "ladder");
+      }
+    },
+    [ladderWanted, submit],
+  );
 
   const loadRequest = useCallback(
     (length: number, fragments: FragmentInput[]) => {
@@ -256,10 +298,10 @@ export default function App() {
             <button
               type="button"
               className="btn primary"
-              onClick={handleSubmit}
-              disabled={loading}
+              onClick={() => submit(ladderWanted ? ladderSize : null, "verdict")}
+              disabled={pending !== null}
             >
-              {loading ? "裁决中…" : "提交重建"}
+              {pending === "verdict" ? "裁决中…" : "提交重建"}
             </button>
             {stale && (
               <span className="stale-note">
@@ -273,7 +315,19 @@ export default function App() {
 
         <section className="panel result-panel">
           {result && !stale ? (
-            <VerdictPanel result={result} />
+            <>
+              <VerdictPanel result={result} />
+              <LadderSection
+                ladder={result.ladder ?? null}
+                targetLength={result.target_length}
+                ladderSize={ladderSize}
+                wanted={ladderWanted}
+                busy={pending === "ladder"}
+                onGenerate={handleGenerateLadder}
+                onCollapse={handleCollapseLadder}
+                onSizeChange={handleLadderSizeChange}
+              />
+            </>
           ) : (
             <div className="empty-state">
               <p>
@@ -309,7 +363,7 @@ export default function App() {
 }
 
 function toClientIssue(iss: ValidationIssue): ClientIssue {
-  // loc 形如 ["body","fragments",2,"payload"] 或 ["body","target_length"]
+  // loc 形如 ["body","fragments",2,"payload"] 或 ["body","target_length"] / ["body","ladder_size"]
   const loc = iss.loc;
   const out: ClientIssue = { msg: iss.msg };
   const fragIdx = loc.indexOf("fragments");
@@ -322,6 +376,8 @@ function toClientIssue(iss: ValidationIssue): ClientIssue {
     }
   } else if (loc.includes("target_length")) {
     out.msg = `目标长度: ${iss.msg}`;
+  } else if (loc.includes("ladder_size")) {
+    out.msg = `阶梯级数: ${iss.msg}`;
   } else if (loc.includes("fragments")) {
     out.msg = `片段列表: ${iss.msg}`;
   }

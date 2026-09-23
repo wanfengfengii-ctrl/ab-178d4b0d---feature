@@ -653,6 +653,136 @@ input.mono {
   margin-top: 8px;
 }
 
+/* ---- 候选阶梯 ---- */
+
+.ladder-section {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 14px;
+}
+
+.ladder-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ladder-title h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.ladder-title .hint {
+  margin: 0;
+}
+
+.ladder-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ladder-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.ladder-size select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ladder-size select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ladder-status {
+  margin: 12px 0 0;
+}
+
+.ladder-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+  gap: 12px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .ladder-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rung-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rung {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.rung:hover {
+  border-color: var(--accent);
+}
+
+.rung.selected {
+  border-color: var(--accent);
+  background: rgba(79, 156, 255, 0.1);
+}
+
+.rung-rank {
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.rung-score {
+  font-size: 12.5px;
+}
+
+.rung-diff {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rung-detail {
+  min-width: 0;
+}
+
+.ladder-exhaust {
+  margin: 10px 0 0;
+}
+
 /* ---- 模态 ---- */
 
 .modal-backdrop {

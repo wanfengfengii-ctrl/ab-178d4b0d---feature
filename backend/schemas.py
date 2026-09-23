@@ -18,6 +18,8 @@ MIN_FRAGMENTS = 2
 MAX_FRAGMENTS = 28
 MIN_WEIGHT = 1
 MAX_WEIGHT = 1_000_000
+MIN_LADDER = 2
+MAX_LADDER = 5
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
@@ -39,8 +41,11 @@ def _err(loc: list[Any], msg: str, err_type: str = "value_error") -> dict[str, A
     return {"loc": ["body", *loc], "msg": msg, "type": err_type}
 
 
-def parse_request(payload: Any) -> tuple[int, list[Fragment]]:
-    """把原始 JSON 解析为 (目标长度, 片段列表), 非法即抛 ValidationError。"""
+def parse_request(payload: Any) -> tuple[int, list[Fragment], int | None]:
+    """把原始 JSON 解析为 (目标长度, 片段列表, 阶梯级数), 非法即抛 ValidationError。
+
+    ladder_size 为可选字段(2..5); 未提供时返回 None, 响应保持原契约。
+    """
 
     errors: list[dict[str, Any]] = []
 
@@ -70,6 +75,25 @@ def parse_request(payload: Any) -> tuple[int, list[Fragment]]:
             target_length = None
         else:
             target_length = raw_length
+
+    # ---- ladder_size(可选): 候选阶梯级数 ----
+    ladder_size: int | None = None
+    if "ladder_size" in payload:
+        raw_ladder = payload["ladder_size"]
+        if not _is_int(raw_ladder):
+            errors.append(
+                _err(["ladder_size"], "必须是整数", "type_error.integer")
+            )
+        elif not (MIN_LADDER <= raw_ladder <= MAX_LADDER):
+            errors.append(
+                _err(
+                    ["ladder_size"],
+                    f"必须在 {MIN_LADDER} 至 {MAX_LADDER} 之间",
+                    "value_error.range",
+                )
+            )
+        else:
+            ladder_size = raw_ladder
 
     if "fragments" not in payload:
         errors.append(_err(["fragments"], "字段必填", "missing"))
@@ -228,4 +252,4 @@ def parse_request(payload: Any) -> tuple[int, list[Fragment]]:
     if errors:
         raise ValidationError(errors)
 
-    return target_length, fragments  # type: ignore[return-value]
+    return target_length, fragments, ladder_size  # type: ignore[return-value]

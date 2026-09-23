@@ -136,6 +136,69 @@ def main() -> None:
     check(("body", "fragments", 1, "weight") in locs,
           "422 定位到 fragments[1].weight")
 
+    # 7) 候选阶梯: 未请求时响应无 ladder 键(原契约兼容)
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 4,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "1122", "weight": 10},
+            {"id": "B", "offset": 2, "payload": "2233", "weight": 20},
+        ],
+    })
+    check(status == 200 and "ladder" not in data,
+          "未携带 ladder_size 时响应无 ladder 键")
+
+    # 8) 候选阶梯: 按得分降序取前 N 份不同正文, 标注首异字节
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 2,
+        "ladder_size": 3,
+        "fragments": [
+            {"id": "X", "offset": 0, "payload": "00", "weight": 100},
+            {"id": "Y", "offset": 0, "payload": "01", "weight": 99},
+            {"id": "W", "offset": 0, "payload": "02", "weight": 98},
+            {"id": "Z", "offset": 1, "payload": "FF", "weight": 1},
+        ],
+    })
+    check(status == 200, "阶梯用例返回 200")
+    assert isinstance(data, dict)
+    ladder = data.get("ladder")
+    check(isinstance(ladder, dict) and ladder["requested"] == 3,
+          "响应携带 requested=3 的阶梯")
+    entries = ladder["entries"]
+    check([e["hex"] for e in entries] == ["00FF", "01FF", "02FF"],
+          "阶梯按得分降序为 00FF > 01FF > 02FF")
+    check([e["total_weight"] for e in entries] == [101, 100, 99],
+          "各阶总权重为 101/100/99")
+    check([e["diff_from_prev"] for e in entries] == [None, 0, 0],
+          "首异字节位置为 null/0/0")
+    check(ladder["exhausted"] is True, "仅 3 份正文, 阶梯已穷尽")
+
+    # 9) 候选阶梯: IMPOSSIBLE 不伪造候选
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 3,
+        "ladder_size": 4,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "11", "weight": 1},
+            {"id": "B", "offset": 2, "payload": "33", "weight": 1},
+        ],
+    })
+    check(status == 200 and data["ladder"]["entries"] == []
+          and data["ladder"]["exhausted"] is True,
+          "IMPOSSIBLE 时阶梯为空且已穷尽")
+
+    # 10) 候选阶梯: 级数越界 -> 422 且定位 ladder_size
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 2,
+        "ladder_size": 6,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "00", "weight": 1},
+            {"id": "B", "offset": 1, "payload": "11", "weight": 1},
+        ],
+    })
+    check(status == 422, "ladder_size 越界返回 HTTP 422")
+    assert isinstance(data, dict)
+    check(any(tuple(e["loc"]) == ("body", "ladder_size") for e in data["detail"]),
+          "422 定位到 ladder_size")
+
     print("[SMOKE] 全部冒烟检查通过。")
 
 

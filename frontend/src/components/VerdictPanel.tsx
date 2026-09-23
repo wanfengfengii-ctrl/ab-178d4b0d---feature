@@ -47,14 +47,17 @@ function firstDiff(a: string, b: string): number {
   return n;
 }
 
-function BodyCard({
+export function BodyCard({
   body,
   length,
   accent,
+  tag,
 }: {
   body: BodyWitness;
   length: number;
   accent: boolean;
+  /** 自定义排名标签; 缺省按裁决语义(字节序最小/次小) */
+  tag?: string;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const coverage = useMemo(
@@ -68,7 +71,7 @@ function BodyCard({
       <div className="body-card-head">
         <span className="rank">#{body.rank}</span>
         <span className="rank-tag">
-          {body.rank === 1 ? "字节序最小正文" : "字节序次小正文"}
+          {tag ?? (body.rank === 1 ? "字节序最小正文" : "字节序次小正文")}
         </span>
       </div>
       <HexBodyView

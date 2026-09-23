@@ -240,3 +240,115 @@ def test_ambiguous_scenario(client: TestClient) -> None:
     data = resp.json()
     assert data["status"] == "AMBIGUOUS"
     assert [b["hex"] for b in data["bodies"]] == ["10", "20"]
+
+
+# ---------- 候选阶梯 ----------
+
+def test_response_without_ladder_size_has_no_ladder_key(client: TestClient) -> None:
+    # 未启用阶梯时响应与原契约完全一致。
+    body = {
+        "target_length": 4,
+        "fragments": [
+            _frag("A", 0, "1122", 10),
+            _frag("B", 2, "2233", 10),
+        ],
+    }
+    resp = client.post("/api/reconstruct", json=body)
+    assert resp.status_code == 200
+    assert "ladder" not in resp.json()
+
+
+def test_ladder_returns_top_n_distinct_bodies(client: TestClient) -> None:
+    body = {
+        "target_length": 2,
+        "ladder_size": 3,
+        "fragments": [
+            _frag("X", 0, "00", 100),
+            _frag("Y", 0, "01", 99),
+            _frag("W", 0, "02", 98),
+            _frag("Z", 1, "FF", 1),
+        ],
+    }
+    resp = client.post("/api/reconstruct", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    ladder = data["ladder"]
+    assert ladder["requested"] == 3
+    assert ladder["exhausted"] is True
+    entries = ladder["entries"]
+    assert [(e["rank"], e["hex"], e["total_weight"], e["fragment_count"]) for e in entries] == [
+        (1, "00FF", 101, 2),
+        (2, "01FF", 100, 2),
+        (3, "02FF", 99, 2),
+    ]
+    assert [e["diff_from_prev"] for e in entries] == [None, 0, 0]
+    assert entries[0]["witness_fragment_ids"] == ["X", "Z"]
+    # 原有裁决字段不受阶梯影响。
+    assert data["status"] == "UNIQUE"
+    assert data["optimal"] == {"total_weight": 101, "fragment_count": 2}
+
+
+def test_ladder_dedupes_same_body_coverings(client: TestClient) -> None:
+    body = {
+        "target_length": 2,
+        "ladder_size": 5,
+        "fragments": [
+            _frag("MAIN", 0, "0000", 10),
+            _frag("DUP1", 0, "00", 5),
+            _frag("DUP2", 1, "00", 5),
+            _frag("ALT", 0, "0101", 9),
+        ],
+    }
+    resp = client.post("/api/reconstruct", json=body)
+    assert resp.status_code == 200
+    ladder = resp.json()["ladder"]
+    assert [e["hex"] for e in ladder["entries"]] == ["0000", "0101"]
+    assert ladder["entries"][0]["witness_fragment_ids"] == ["DUP1", "DUP2", "MAIN"]
+    assert ladder["exhausted"] is True
+
+
+def test_ladder_empty_and_exhausted_when_impossible(client: TestClient) -> None:
+    body = {
+        "target_length": 3,
+        "ladder_size": 4,
+        "fragments": [
+            _frag("A", 0, "00", 10),
+            _frag("B", 2, "22", 10),
+        ],
+    }
+    resp = client.post("/api/reconstruct", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "IMPOSSIBLE"
+    assert data["ladder"] == {"requested": 4, "exhausted": True, "entries": []}
+
+
+@pytest.mark.parametrize("bad", [1, 6, "3", True, 2.5])
+def test_ladder_size_validation_points_at_field(client: TestClient, bad: object) -> None:
+    body = {
+        "target_length": 2,
+        "ladder_size": bad,
+        "fragments": [
+            _frag("A", 0, "00", 1),
+            _frag("B", 1, "11", 1),
+        ],
+    }
+    resp = client.post("/api/reconstruct", json=body)
+    assert resp.status_code == 422
+    locs = [tuple(e["loc"]) for e in resp.json()["detail"]]
+    assert ("body", "ladder_size") in locs
+
+
+def test_ladder_size_boundary_values_accepted(client: TestClient) -> None:
+    for size in (2, 5):
+        body = {
+            "target_length": 2,
+            "ladder_size": size,
+            "fragments": [
+                _frag("A", 0, "00", 1),
+                _frag("B", 1, "11", 1),
+            ],
+        }
+        resp = client.post("/api/reconstruct", json=body)
+        assert resp.status_code == 200
+        assert resp.json()["ladder"]["requested"] == size

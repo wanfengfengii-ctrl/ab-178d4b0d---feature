@@ -60,6 +60,36 @@ class BodyWitness:
 
 
 @dataclass(frozen=True)
+class LadderEntry:
+    """候选阶梯中的一阶: 一份不同正文、其最优得分与见证。
+
+    diff_from_prev 为该正文与上一阶正文首次不同的字节位置(零起算),
+    第一阶没有上一阶, 恒为 None。
+    """
+
+    rank: int
+    hex: str
+    total_weight: int
+    fragment_count: int
+    diff_from_prev: Optional[int]
+    witness_fragment_ids: tuple[str, ...]
+    adopted_fragments: tuple[WitnessFragment, ...]
+
+
+@dataclass(frozen=True)
+class CandidateLadder:
+    """按请求级数(2..5)截取的不同正文阶梯。
+
+    exhausted 为 True 表示阶梯已列出全部现存不同正文(不足请求级数时
+    必然已穷尽); 为 False 表示还有更多正文未列出。
+    """
+
+    requested: int
+    exhausted: bool
+    entries: tuple[LadderEntry, ...]
+
+
+@dataclass(frozen=True)
 class ReconstructionResult:
     status: str  # UNIQUE / AMBIGUOUS / IMPOSSIBLE
     target_length: int
@@ -70,9 +100,10 @@ class ReconstructionResult:
     conflict_positions: tuple[int, ...]
     uncovered_positions: tuple[int, ...]
     impossible_reason: Optional[str]  # GAP / CONFLICT / None
+    ladder: Optional[CandidateLadder]  # 仅在请求 ladder_size 时存在
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "status": self.status,
             "target_length": self.target_length,
             "optimal": {
@@ -108,6 +139,33 @@ class ReconstructionResult:
             "uncovered_positions": list(self.uncovered_positions),
             "impossible_reason": self.impossible_reason,
         }
+        # 仅在请求方启用阶梯时附加该键, 未启用时响应与原契约完全一致。
+        if self.ladder is not None:
+            out["ladder"] = {
+                "requested": self.ladder.requested,
+                "exhausted": self.ladder.exhausted,
+                "entries": [
+                    {
+                        "rank": e.rank,
+                        "hex": e.hex,
+                        "total_weight": e.total_weight,
+                        "fragment_count": e.fragment_count,
+                        "diff_from_prev": e.diff_from_prev,
+                        "witness_fragment_ids": list(e.witness_fragment_ids),
+                        "adopted_fragments": [
+                            {
+                                "id": f.id,
+                                "offset": f.offset,
+                                "payload": f.payload_hex,
+                                "weight": f.weight,
+                            }
+                            for f in e.adopted_fragments
+                        ],
+                    }
+                    for e in self.ladder.entries
+                ],
+            }
+        return out
 
 
 def _build_conflicts(
@@ -162,8 +220,168 @@ def _adjacency(fragments: list[Fragment]) -> list[int]:
     return adj
 
 
-def solve(length: int, fragments: list[Fragment]) -> ReconstructionResult:
-    """求解重建问题。调用方需已完成全部输入合法性校验。"""
+def _empty_ladder(ladder_size: Optional[int]) -> Optional[CandidateLadder]:
+    """IMPOSSIBLE 时的阶梯: 不得伪造候选, 为空且已穷尽。"""
+
+    if ladder_size is None:
+        return None
+    return CandidateLadder(requested=ladder_size, exhausted=True, entries=())
+
+
+def _compute_ladder(
+    length: int, fragments: list[Fragment], limit: int
+) -> CandidateLadder:
+    """从所有完整一致覆盖中收集不同正文, 按得分取前 limit 阶。
+
+    关键观察: 对任一可还原正文 B, 其最优(总权重, 片段数)覆盖恰为
+    "全部与 B 逐字节一致的片段"——权重为正, 相容片段全取只增不减;
+    该集合正是冲突图上覆盖全集的极大独立集, 且不同正文与此类极大
+    独立集一一对应。因此枚举极大独立集即可不重不漏地得到每份正文,
+    同一正文的海量重复覆盖只会汇入同一极大集, 不会重复占位。
+    """
+
+    n = len(fragments)
+    adj = _adjacency(fragments)
+    full_mask = (1 << length) - 1
+    all_vertices = (1 << n) - 1
+
+    cover_masks = []
+    for frag in fragments:
+        m = 0
+        for pos in range(frag.offset, frag.end):
+            m |= 1 << pos
+        cover_masks.append(m)
+
+    # 与主求解器一致的分支顺序: 偏移升序、权重降序。
+    order = sorted(range(n), key=lambda k: (fragments[k].offset, -fragments[k].weight, k))
+    weight = [fragments[k].weight for k in order]
+    covers = [cover_masks[k] for k in order]
+    # 邻接位重映到 order 索引空间。
+    adj_o = [0] * n
+    for a in range(n):
+        row = adj[order[a]]
+        bits = 0
+        for b in range(n):
+            if row & (1 << order[b]):
+                bits |= 1 << b
+        adj_o[a] = bits
+    # suffix[i]: 决策位置 >= i 的顶点集合, 用于取"更靠后的邻居"。
+    suffix = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        suffix[i] = suffix[i + 1] | (1 << i)
+
+    buf = bytearray(length)
+    writers = [0] * length  # 各目标字节当前被已选片段覆盖的次数(回溯时撤销)
+    # 不同正文 -> (总权重, 片段数, 见证位掩码)
+    best: dict[bytes, tuple[int, int, int]] = {}
+
+    def search(i: int, chosen: int, dominated: int, total: int, count: int, covered: int) -> None:
+        if i == n:
+            if (all_vertices ^ chosen) & ~dominated:
+                return  # 仍有可加入而未冲突的片段: 非极大集, 其正文由更大集合代表。
+            if covered != full_mask:
+                return
+            body = bytes(buf)
+            prev = best.get(body)
+            if prev is None or (total, count) > (prev[0], prev[1]):
+                best[body] = (total, count, chosen)
+            return
+
+        # 覆盖可达性剪枝: 剩余相容片段全取仍补不齐覆盖则回溯。
+        reachable = covered
+        for k in range(i, n):
+            if not (adj_o[k] & chosen):
+                reachable |= covers[k]
+        if reachable != full_mask:
+            return
+
+        if adj_o[i] & chosen:
+            # 与已选冲突: 只能排除(已被支配, 不影响极大性)。
+            search(i + 1, chosen, dominated, total, count, covered)
+            return
+
+        # 包含分支。
+        frag = fragments[order[i]]
+        for j, byte in enumerate(frag.payload):
+            pos = frag.offset + j
+            writers[pos] += 1
+            buf[pos] = byte
+        search(
+            i + 1,
+            chosen | (1 << i),
+            dominated | adj_o[i],
+            total + weight[i],
+            count + 1,
+            covered | covers[i],
+        )
+        for j in range(len(frag.payload)):
+            writers[frag.offset + j] -= 1
+
+        # 排除分支: 仅当存在更靠后且与已选相容的冲突邻居时才可能极大;
+        # 否则该片段在任何极大扩展中都必选, 跳过排除分支(必选剪枝)。
+        later = adj_o[i] & suffix[i + 1]
+        while later:
+            b = (later & -later).bit_length() - 1
+            if not (adj_o[b] & chosen):
+                break
+            later &= later - 1
+        if later:
+            search(i + 1, chosen, dominated, total, count, covered)
+
+    search(0, 0, 0, 0, 0, 0)
+
+    # 计分: 每份不同正文取其可达的最大(总权重, 片段数); 排名先得分
+    # 降序, 同分再按无符号正文升序。
+    ranked = sorted(best.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))
+
+    entries: list[LadderEntry] = []
+    prev_body: Optional[bytes] = None
+    for rank, (body, (total, count, chosen)) in enumerate(ranked[:limit], start=1):
+        # 同分覆盖的唯一最优即全相容集; 见证按片段编号升序给出。
+        members: list[Fragment] = []
+        bits = chosen
+        while bits:
+            k = (bits & -bits).bit_length() - 1
+            members.append(fragments[order[k]])
+            bits &= bits - 1
+        members.sort(key=lambda f: f.id)
+
+        diff: Optional[int] = None
+        if prev_body is not None:
+            for pos in range(length):
+                if prev_body[pos] != body[pos]:
+                    diff = pos
+                    break
+        entries.append(
+            LadderEntry(
+                rank=rank,
+                hex=body.hex().upper(),
+                total_weight=total,
+                fragment_count=count,
+                diff_from_prev=diff,
+                witness_fragment_ids=tuple(f.id for f in members),
+                adopted_fragments=tuple(
+                    WitnessFragment(f.id, f.offset, f.payload.hex().upper(), f.weight)
+                    for f in members
+                ),
+            )
+        )
+        prev_body = body
+
+    return CandidateLadder(
+        requested=limit,
+        exhausted=len(ranked) <= limit,
+        entries=tuple(entries),
+    )
+
+
+def solve(
+    length: int, fragments: list[Fragment], ladder_size: Optional[int] = None
+) -> ReconstructionResult:
+    """求解重建问题。调用方需已完成全部输入合法性校验。
+
+    ladder_size 为 None 时不计算候选阶梯, 结果与原契约完全一致;
+    给出 2..5 时附加相应级数的候选阶梯。"""
 
     conflicts, conflict_positions, uncovered = _build_conflicts(length, fragments)
     n = len(fragments)
@@ -176,11 +394,12 @@ def solve(length: int, fragments: list[Fragment]) -> ReconstructionResult:
             target_length=length,
             total_weight=None,
             fragment_count=None,
- bodies=(),
+            bodies=(),
             conflicts=tuple(conflicts),
             conflict_positions=tuple(conflict_positions),
             uncovered_positions=tuple(uncovered),
             impossible_reason="GAP",
+            ladder=_empty_ladder(ladder_size),
         )
 
     adj = _adjacency(fragments)
@@ -276,6 +495,7 @@ def solve(length: int, fragments: list[Fragment]) -> ReconstructionResult:
             conflict_positions=tuple(conflict_positions),
             uncovered_positions=(),
             impossible_reason="CONFLICT",
+            ladder=_empty_ladder(ladder_size),
         )
 
     def make_witness(rank: int, body: bytes, chosen: int) -> BodyWitness:
@@ -307,6 +527,12 @@ def solve(length: int, fragments: list[Fragment]) -> ReconstructionResult:
         )
         status = "AMBIGUOUS"
 
+    ladder = (
+        _compute_ladder(length, fragments, ladder_size)
+        if ladder_size is not None
+        else None
+    )
+
     return ReconstructionResult(
         status=status,
         target_length=length,
@@ -317,4 +543,5 @@ def solve(length: int, fragments: list[Fragment]) -> ReconstructionResult:
         conflict_positions=tuple(conflict_positions),
         uncovered_positions=(),
         impossible_reason=None,
+        ladder=ladder,
     )

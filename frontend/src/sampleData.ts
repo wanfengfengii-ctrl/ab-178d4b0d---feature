@@ -71,4 +71,19 @@ export const SAMPLES: Sample[] = [
       ],
     },
   },
+  {
+    key: "ladder",
+    label: "候选阶梯",
+    description: "两个位置各有等权互斥选项 → 4 份同分正文, 适合生成 2–5 级候选阶梯对照。",
+    request: {
+      target_length: 3,
+      fragments: [
+        { id: "P0-A", offset: 0, payload: "41", weight: 10 },
+        { id: "P0-B", offset: 0, payload: "42", weight: 10 },
+        { id: "P1-A", offset: 1, payload: "51", weight: 10 },
+        { id: "P1-B", offset: 1, payload: "52", weight: 10 },
+        { id: "TAIL", offset: 2, payload: "61", weight: 10 },
+      ],
+    },
+  },
 ];
