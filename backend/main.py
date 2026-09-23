@@ -50,8 +50,8 @@ async def reconstruct(request: Request) -> dict:
                 }
             ]
         )
-    length, fragments = parse_request(payload)
-    return solve(length, fragments).to_dict()
+    length, fragments, ladder_size = parse_request(payload)
+    return solve(length, fragments, ladder_size).to_dict()
 
 
 # 生产镜像中前端构建产物挂载到根路径; 开发时该目录不存在则跳过。

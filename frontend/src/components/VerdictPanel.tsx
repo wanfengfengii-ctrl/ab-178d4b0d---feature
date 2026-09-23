@@ -6,6 +6,7 @@ import type {
 import { useMemo, useState } from "react";
 import HexBodyView from "./HexBodyView";
 import ConflictMap from "./ConflictMap";
+import LadderPanel from "./LadderPanel";
 
 const STATUS_TEXT: Record<string, { title: string; cls: string; desc: string }> = {
   UNIQUE: {
@@ -161,6 +162,13 @@ export default function VerdictPanel({ result }: { result: ReconstructionResult 
             />
           ))}
         </div>
+      )}
+
+      {result.ladder && (
+        <LadderPanel
+          ladder={result.ladder}
+          length={result.target_length}
+        />
       )}
 
       {/* 输入层面的片段冲突/缺口图: 任何裁决下都展示, 便于区分冲突与歧义 */}

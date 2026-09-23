@@ -136,6 +136,94 @@ def main() -> None:
     check(("body", "fragments", 1, "weight") in locs,
           "422 定位到 fragments[1].weight")
 
+    # 7) 未启用阶梯时响应不含 ladder 字段(向后兼容)
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 2,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "00", "weight": 10},
+            {"id": "B", "offset": 1, "payload": "FF", "weight": 10},
+        ],
+    })
+    check(status == 200, "兼容请求返回 200")
+    assert isinstance(data, dict)
+    check("ladder" not in data, "未传 ladder_size 时响应不含 ladder 字段")
+
+    # 8) 候选阶梯: 得分降序 + 同分无符号序 + 首差位置 + 去重
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 1,
+        "ladder_size": 3,
+        "fragments": [
+            {"id": "X0", "offset": 0, "payload": "00", "weight": 100},
+            {"id": "X1", "offset": 0, "payload": "01", "weight": 60},
+            {"id": "X2", "offset": 0, "payload": "02", "weight": 10},
+        ],
+    })
+    check(status == 200, "阶梯请求返回 200")
+    assert isinstance(data, dict)
+    ladder = data.get("ladder")
+    check(isinstance(ladder, dict), "响应包含 ladder")
+    rungs = ladder["rungs"]
+    check([r["hex"] for r in rungs] == ["00", "01", "02"],
+          "阶梯按总权重降序返回 00/01/02")
+    check([r["total_weight"] for r in rungs] == [100, 60, 10],
+          "各阶给出该正文可达到的最大总权重")
+    check(rungs[0]["first_diff_position"] is None
+          and rungs[1]["first_diff_position"] == 0
+          and rungs[2]["first_diff_position"] == 0,
+          "首阶无首差, 其余标明与上一阶首次不同的字节位置")
+    check(ladder["total_bodies"] == 3 and ladder["exhausted"] is True,
+          "仅 3 份正文时明确标记已穷尽")
+
+    # 9) 同正文重复覆盖不得占用多个阶梯名次
+    dup_frags = []
+    for body_byte in (0x00, 0x01):
+        for dup in range(10):
+            dup_frags.append({
+                "id": f"B{body_byte:02X}-{dup}",
+                "offset": 0,
+                "payload": f"{body_byte:02X}",
+                "weight": 1,
+            })
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 1,
+        "ladder_size": 5,
+        "fragments": dup_frags,
+    })
+    check(status == 200, "重复覆盖阶梯请求返回 200")
+    assert isinstance(data, dict)
+    check([r["hex"] for r in data["ladder"]["rungs"]] == ["00", "01"],
+          "20 条同正文重复覆盖只产生 2 个阶梯名次")
+    check(all(r["fragment_count"] == 10 for r in data["ladder"]["rungs"]),
+          "每份正文取其全部一致片段作为见证(10 片)")
+
+    # 10) IMPOSSIBLE 不伪造候选
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 3,
+        "ladder_size": 5,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "11", "weight": 1},
+            {"id": "B", "offset": 2, "payload": "33", "weight": 1},
+        ],
+    })
+    check(status == 200, "IMPOSSIBLE 阶梯请求返回 200")
+    assert isinstance(data, dict)
+    check(data["ladder"]["rungs"] == [] and data["ladder"]["total_bodies"] == 0,
+          "IMPOSSIBLE 时阶梯为空, 不伪造候选正文")
+
+    # 11) ladder_size 越界 -> 422 且定位到 ladder_size
+    status, data = request("POST", "/api/reconstruct", {
+        "target_length": 1,
+        "ladder_size": 9,
+        "fragments": [
+            {"id": "A", "offset": 0, "payload": "00", "weight": 1},
+            {"id": "B", "offset": 0, "payload": "00", "weight": 1},
+        ],
+    })
+    check(status == 422, "ladder_size=9 返回 422")
+    assert isinstance(data, dict)
+    check(tuple(data["detail"][0]["loc"]) == ("body", "ladder_size"),
+          "422 定位到 ladder_size")
+
     print("[SMOKE] 全部冒烟检查通过。")
 
 

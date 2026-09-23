@@ -39,6 +39,8 @@ export default function App() {
   const [issues, setIssues] = useState<ClientIssue[]>([]);
   const [loading, setLoading] = useState(false);
   const [stale, setStale] = useState(false);
+  const [ladderEnabled, setLadderEnabled] = useState(false);
+  const [ladderSize, setLadderSize] = useState("3");
   const [importOpen, setImportOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const seqRef = useRef(0);
@@ -112,6 +114,15 @@ export default function App() {
     if (rows.length < 2 || rows.length > 28) {
       local.push({ msg: `片段数量必须在 2 至 28 之间(当前 ${rows.length})` });
     }
+    let parsedLadderSize: number | undefined;
+    if (ladderEnabled) {
+      const n = Number(ladderSize);
+      if (!/^\d+$/.test(ladderSize.trim()) || n < 2 || n > 5) {
+        local.push({ msg: "候选阶梯级数必须是 2 至 5 的整数" });
+      } else {
+        parsedLadderSize = n;
+      }
+    }
     if (targetLength.trim() !== "" && rows.length >= 2 && rows.length <= 28) {
       local.push(...clientCheck(Number(targetLength) || 0, rows));
     }
@@ -137,7 +148,13 @@ export default function App() {
     setIssues([]);
     try {
       const res = await reconstruct(
-        { target_length: length, fragments },
+        {
+          target_length: length,
+          fragments,
+          ...(parsedLadderSize !== undefined
+            ? { ladder_size: parsedLadderSize }
+            : {}),
+        },
         controller.signal,
       );
       if (seq === seqRef.current) {
@@ -159,7 +176,7 @@ export default function App() {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, [targetLength, rows, clientCheck]);
+  }, [targetLength, rows, clientCheck, ladderEnabled, ladderSize]);
 
   const loadRequest = useCallback(
     (length: number, fragments: FragmentInput[]) => {
@@ -242,6 +259,40 @@ export default function App() {
               }}
             />
           </label>
+
+          <div className="ladder-control">
+            <label className="ladder-toggle">
+              <input
+                type="checkbox"
+                checked={ladderEnabled}
+                onChange={(e) => {
+                  setLadderEnabled(e.target.checked);
+                  invalidate();
+                }}
+              />
+              <span>
+                生成候选阶梯（2–5 级）
+                <span className="ladder-hint">
+                  查看高可信证据被否定时, 按得分最接近的其他正文
+                </span>
+              </span>
+            </label>
+            {ladderEnabled && (
+              <label className="ladder-size-row">
+                阶梯级数
+                <input
+                  type="number"
+                  min={2}
+                  max={5}
+                  value={ladderSize}
+                  onChange={(e) => {
+                    setLadderSize(e.target.value);
+                    invalidate();
+                  }}
+                />
+              </label>
+            )}
+          </div>
 
           <FragmentTable
             rows={rows}

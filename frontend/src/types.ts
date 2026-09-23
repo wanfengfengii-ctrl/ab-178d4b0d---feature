@@ -8,6 +8,7 @@ export interface FragmentInput {
 export interface ReconstructRequest {
   target_length: number;
   fragments: FragmentInput[];
+  ladder_size?: number;
 }
 
 export interface AdoptedFragment {
@@ -22,6 +23,24 @@ export interface BodyWitness {
   hex: string;
   witness_fragment_ids: string[];
   adopted_fragments: AdoptedFragment[];
+}
+
+export interface LadderRung {
+  rank: number;
+  hex: string;
+  total_weight: number;
+  fragment_count: number;
+  witness_fragment_ids: string[];
+  adopted_fragments: AdoptedFragment[];
+  first_diff_position: number | null;
+  is_optimal: boolean;
+}
+
+export interface Ladder {
+  requested: number;
+  total_bodies: number;
+  exhausted: boolean;
+  rungs: LadderRung[];
 }
 
 export interface ConflictAlternative {
@@ -45,6 +64,7 @@ export interface ReconstructionResult {
   conflict_positions: number[];
   uncovered_positions: number[];
   impossible_reason: ImpossibleReason;
+  ladder?: Ladder;
 }
 
 export interface ValidationIssue {

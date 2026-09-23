@@ -5,6 +5,7 @@ interface Props {
   length: number;
   coverage: string[][]; // 每个字节由哪些见证片段覆盖
   selectedFrag: AdoptedFragment | null;
+  markPosition?: number | null; // 需要额外描边标出的字节位置(如阶梯首差)
 }
 
 const BYTES_PER_ROW = 16;
@@ -14,7 +15,7 @@ function asciiRepr(byte: string): string {
   return n >= 0x20 && n <= 0x7e ? String.fromCharCode(n) : "·";
 }
 
-export default function HexBodyView({ hex, length, coverage, selectedFrag }: Props) {
+export default function HexBodyView({ hex, length, coverage, selectedFrag, markPosition }: Props) {
   const bytes: string[] = [];
   for (let i = 0; i < length; i++) {
     bytes.push(hex.slice(i * 2, i * 2 + 2) || "??");
@@ -58,6 +59,7 @@ export default function HexBodyView({ hex, length, coverage, selectedFrag }: Pro
                   } else if (ids.length >= 2) {
                     cls += " overlap";
                   }
+                  if (markPosition === pos) cls += " marked";
                   const title = ids.length
                     ? `偏移 ${pos} · 0x${b} · 见证: ${ids.join(", ")}`
                     : `偏移 ${pos} · 0x${b}`;
